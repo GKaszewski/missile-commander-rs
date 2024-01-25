@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 use macroquad::{ prelude::*, audio::{ self, play_sound_once } };
 use std::{ time::{ SystemTime, UNIX_EPOCH }, rc::Rc };
 
@@ -6,7 +6,7 @@ const ENEMY_COLOR: Color = RED;
 const PLAYER_COLOR: Color = GREEN;
 const BUILDING_COLOR: Color = WHITE;
 const NUM_BUILDINGS: u32 = 3;
-const MISSILE_SIZE: f32 = 10.0;
+const MISSILE_SIZE: f32 = 32.0;
 
 #[derive(PartialEq)]
 struct Missile {
@@ -74,17 +74,30 @@ struct Game {
     cannons: Vec<Cannon>,
     plane_texture: Rc<Texture2D>,
     building_texture: Rc<Texture2D>,
+    missile_texture: Rc<Texture2D>,
     missile_fire_sound: Rc<audio::Sound>,
     explosion_sound: Rc<audio::Sound>,
     enemy_missile_sound: Rc<audio::Sound>,
     crosshairs: Vec<Crosshair>,
+    camera: Camera2D,
     game_over: bool,
     score: i32,
 }
 
-fn draw_missile(x: f32, y: f32, size: f32, direction: Vec2, color: Color) {
-    let rotation = direction.y.atan2(direction.x).to_degrees();
-    draw_poly(x, y, 3, size, rotation, color);
+fn draw_missile(
+    x: f32,
+    y: f32,
+    size: f32,
+    direction: Vec2,
+    color: Color,
+    missile_texture: &Texture2D
+) {
+    let rotation = direction.y.atan2(direction.x);
+    draw_texture_ex(missile_texture, x, y, color, DrawTextureParams {
+        dest_size: Some(vec2(size, size / 2.0)),
+        rotation,
+        ..Default::default()
+    });
 }
 
 fn draw_trail(x: f32, y: f32, length: f32, direction: Vec2) {
@@ -140,12 +153,12 @@ fn update_plane(plane: &mut Plane) {
     plane.y += plane.direction.y * plane.speed;
 }
 
-fn update_cannon(cannon: &mut Cannon, closest_cannon: Option<Cannon>) {
+fn update_cannon(cannon: &mut Cannon, closest_cannon: Option<Cannon>, cam: &Camera2D) {
     let mouse_position = mouse_position();
-    let target = vec2(mouse_position.0, mouse_position.1);
+    let world_position = cam.screen_to_world(vec2(mouse_position.0, mouse_position.1));
     if let Some(closest_cannon) = closest_cannon {
         if closest_cannon.x == cannon.x && closest_cannon.y == cannon.y {
-            cannon.target = target;
+            cannon.target = world_position;
         }
     }
 }
@@ -194,7 +207,10 @@ fn spawn_crosshair(game: &mut Game, missile_index: Option<usize>) {
     }
 
     let mouse_position = mouse_position();
-    let crosshair_position = vec2(mouse_position.0, mouse_position.1);
+    println!("Mouse position: {:?}", mouse_position);
+    let world_position = game.camera.screen_to_world(vec2(mouse_position.0, mouse_position.1));
+    println!("World position: {:?}", world_position);
+    let crosshair_position = vec2(world_position.x, world_position.y);
     let crosshair = Crosshair {
         x: crosshair_position.x,
         y: crosshair_position.y,
@@ -204,13 +220,14 @@ fn spawn_crosshair(game: &mut Game, missile_index: Option<usize>) {
     game.crosshairs.push(crosshair);
 }
 
-fn get_closeset_cannon_no_ref(cannons: &Vec<Cannon>) -> Option<Cannon> {
+fn get_closeset_cannon_no_ref(cannons: &Vec<Cannon>, cam: &Camera2D) -> Option<Cannon> {
     let mouse_position = mouse_position();
     let mouse_position = vec2(mouse_position.0, mouse_position.1);
+    let world_position = cam.screen_to_world(mouse_position);
     let mut closest_cannon: Option<Cannon> = None;
     let mut closest_distance = 100000.0;
     for cannon in cannons {
-        let distance = mouse_position.distance(vec2(cannon.x, cannon.y));
+        let distance = world_position.distance(vec2(cannon.x, cannon.y));
         if distance < closest_distance {
             closest_distance = distance;
             closest_cannon = Some(cannon.clone());
@@ -220,13 +237,17 @@ fn get_closeset_cannon_no_ref(cannons: &Vec<Cannon>) -> Option<Cannon> {
     closest_cannon
 }
 
-fn get_closest_cannon_mut(cannons: &mut Vec<Cannon>) -> Option<&mut Cannon> {
+fn get_closest_cannon_mut<'a>(
+    cannons: &'a mut Vec<Cannon>,
+    cam: &'a Camera2D
+) -> Option<&'a mut Cannon> {
     let mouse_position = mouse_position();
     let mouse_position = vec2(mouse_position.0, mouse_position.1);
+    let world_position = cam.screen_to_world(mouse_position);
     let mut closest_cannon: Option<&mut Cannon> = None;
     let mut closest_distance = 100000.0;
     for cannon in cannons {
-        let distance = mouse_position.distance(vec2(cannon.x, cannon.y));
+        let distance = world_position.distance(vec2(cannon.x, cannon.y));
         if distance < closest_distance {
             closest_distance = distance;
             closest_cannon = Some(cannon);
@@ -236,12 +257,12 @@ fn get_closest_cannon_mut(cannons: &mut Vec<Cannon>) -> Option<&mut Cannon> {
     closest_cannon
 }
 
-fn aabb_collision(x1: f32, y1: f32, size1: f32, x2: f32, y2: f32, size2: f32) -> bool {
+fn aabb_collision(x1: f32, y1: f32, size1: Vec2, x2: f32, y2: f32, size2: Vec2) -> bool {
     if
-        x1 - size1 / 2.0 < x2 + size2 / 2.0 &&
-        x1 + size1 / 2.0 > x2 - size2 / 2.0 &&
-        y1 - size1 / 2.0 < y2 + size2 / 2.0 &&
-        y1 + size1 / 2.0 > y2 - size2 / 2.0
+        x1 - size1.x / 2.0 < x2 + size2.y / 2.0 &&
+        x1 + size1.x / 2.0 > x2 - size2.y / 2.0 &&
+        y1 - size1.x / 2.0 < y2 + size2.y / 2.0 &&
+        y1 + size1.x / 2.0 > y2 - size2.y / 2.0
     {
         return true;
     }
@@ -253,25 +274,32 @@ fn missile_hit_building(missile: &Missile, building: &Building) -> bool {
     return aabb_collision(
         missile.x,
         missile.y,
-        MISSILE_SIZE,
+        Vec2::new(MISSILE_SIZE, MISSILE_SIZE / 2.0),
         building.x + building.size / 2.0,
         building.y + building.size / 2.0,
-        building.size
+        Vec2::new(building.size, building.size)
     );
 }
 
 fn missile_hit_plane(missile: &Missile, plane: &Plane) -> bool {
-    return aabb_collision(missile.x, missile.y, MISSILE_SIZE, plane.x, plane.y, plane.size);
+    return aabb_collision(
+        missile.x,
+        missile.y,
+        Vec2::new(MISSILE_SIZE, MISSILE_SIZE / 2.0),
+        plane.x,
+        plane.y,
+        Vec2::new(plane.size, plane.size)
+    );
 }
 
 fn missile_hit_missile(missile1: &Missile, missile2: &Missile) -> bool {
     return aabb_collision(
         missile1.x,
         missile1.y,
-        MISSILE_SIZE,
+        Vec2::new(MISSILE_SIZE, MISSILE_SIZE / 2.0),
         missile2.x,
         missile2.y,
-        MISSILE_SIZE
+        Vec2::new(MISSILE_SIZE, MISSILE_SIZE / 2.0)
     );
 }
 
@@ -344,7 +372,7 @@ fn handle_collisions(game: &mut Game) {
 
 fn update_game(game: &mut Game) {
     if is_mouse_button_pressed(MouseButton::Left) {
-        let closest_cannon = get_closest_cannon_mut(&mut game.cannons);
+        let closest_cannon = get_closest_cannon_mut(&mut game.cannons, &game.camera);
         if let Some(cannon) = closest_cannon {
             if cannon.ammo == 0 {
                 return;
@@ -372,10 +400,10 @@ fn update_game(game: &mut Game) {
         update_plane(plane);
     }
 
-    let closest_cannon = get_closeset_cannon_no_ref(&game.cannons);
+    let closest_cannon = get_closeset_cannon_no_ref(&game.cannons, &game.camera);
 
     for cannon in &mut game.cannons {
-        update_cannon(cannon, closest_cannon);
+        update_cannon(cannon, closest_cannon, &game.camera);
     }
 
     handle_collisions(game);
@@ -408,19 +436,36 @@ fn draw_planes(planes: &Vec<Plane>, plane_texture: &Texture2D) {
     }
 }
 
-fn draw_enemy_missiles(enemy_missiles: &Vec<Missile>) {
+fn draw_enemy_missiles(enemy_missiles: &Vec<Missile>, missile_texture: &Texture2D) {
     for missile in enemy_missiles {
-        draw_trail(missile.x, missile.y, missile.trail_length, -missile.direction);
-        draw_missile(missile.x, missile.y, 10.0, missile.direction, ENEMY_COLOR);
-        // draw_aabb(missile.x, missile.y, MISSILE_SIZE, BLUE);
+        draw_trail(
+            missile.x + MISSILE_SIZE / 2.0,
+            missile.y,
+            missile.trail_length,
+            -missile.direction
+        );
+        draw_missile(
+            missile.x,
+            missile.y,
+            MISSILE_SIZE,
+            missile.direction,
+            ENEMY_COLOR,
+            missile_texture
+        );
+        //draw_aabb(missile.x, missile.y, MISSILE_SIZE, BLUE);
     }
 }
 
-fn draw_player_missiles(player_missiles: &Vec<Missile>) {
+fn draw_player_missiles(player_missiles: &Vec<Missile>, missile_texture: &Texture2D) {
     for missile in player_missiles {
-        draw_trail(missile.x, missile.y, missile.trail_length, -missile.direction);
-        draw_missile(missile.x, missile.y, 10.0, missile.direction, PLAYER_COLOR);
-        // draw_aabb(missile.x, missile.y, MISSILE_SIZE, BLUE);
+        draw_trail(
+            missile.x + MISSILE_SIZE / 2.0,
+            missile.y,
+            missile.trail_length,
+            -missile.direction
+        );
+        draw_missile(missile.x, missile.y, MISSILE_SIZE, missile.direction, WHITE, missile_texture);
+        //draw_aabb(missile.x, missile.y, MISSILE_SIZE, BLUE);
     }
 }
 
@@ -450,8 +495,8 @@ fn draw_game(game: &Game) {
     draw_planes(&game.planes, &game.plane_texture);
     draw_cannons(&game.cannons);
     draw_crosshairs(&game.crosshairs);
-    draw_enemy_missiles(&game.enemy_missiles);
-    draw_player_missiles(&game.player_missiles);
+    draw_enemy_missiles(&game.enemy_missiles, &game.missile_texture);
+    draw_player_missiles(&game.player_missiles, &game.missile_texture);
     draw_score(game.score);
 }
 
@@ -580,16 +625,35 @@ fn spawn_enemy_missiles(game: &mut Game) {
     }
 }
 
-// fn draw_aabb(x: f32, y: f32, size: f32, color: Color) {
-//     draw_rectangle_lines(x - size / 2.0, y - size / 2.0, size, size, 2.0, color);
-// }
+fn draw_aabb(x: f32, y: f32, size: f32, color: Color) {
+    draw_rectangle_lines(x - size / 2.0, y - size / 2.0, size, size, 2.0, color);
+}
 
-#[macroquad::main("Missile commander")]
+fn handle_resize(last_screen_width: f32, last_screen_height: f32, game: &mut Game) {
+    let screen_width = screen_width();
+    let screen_height = screen_height();
+    if screen_width != last_screen_width || screen_height != last_screen_height {
+        game.camera.zoom = vec2((1.0 / screen_width) * 2.0, (1.0 / screen_height) * 2.0);
+    }
+}
+
+fn window_conf() -> Conf {
+    Conf {
+        window_title: String::from("Missile commander"),
+        window_width: 800,
+        window_height: 600,
+        ..Default::default()
+    }
+}
+
+#[macroquad::main(window_conf)]
 async fn main() {
     rand::srand(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64);
     let building_texture = load_texture("assets/building.png").await.unwrap();
     let plane_texture = load_texture("assets/plane.png").await.unwrap();
+    let missile_texture = load_texture("assets/missile.png").await.unwrap();
     building_texture.set_filter(FilterMode::Nearest);
+    missile_texture.set_filter(FilterMode::Nearest);
     plane_texture.set_filter(FilterMode::Nearest);
     let missile_fire_sound = audio::load_sound("assets/missile_fire.ogg").await.unwrap();
     let explosion_sound = audio::load_sound("assets/explosion.ogg").await.unwrap();
@@ -603,19 +667,29 @@ async fn main() {
         cannons: vec![],
         plane_texture: Rc::new(plane_texture),
         building_texture: Rc::new(building_texture),
+        missile_texture: Rc::new(missile_texture),
         missile_fire_sound: Rc::new(missile_fire_sound),
         explosion_sound: Rc::new(explosion_sound),
         enemy_missile_sound: Rc::new(enemy_missile_sound),
         crosshairs: vec![],
         score: 0,
         game_over: false,
+        camera: Camera2D {
+            zoom: vec2((1.0 / screen_width()) * 2.0, (1.0 / screen_height()) * 2.0),
+            target: vec2(screen_width() / 2.0, screen_height() / 2.0),
+            ..Default::default()
+        },
     };
     spawn_buildings(&mut game);
     spawn_cannons(&mut game);
     spawn_enemy_missiles(&mut game);
     spawn_plane(&mut game);
+    set_camera(&game.camera);
     loop {
+        let last_screen_width = screen_width();
+        let last_screen_height = screen_height();
         clear_background(BLACK);
+        handle_resize(last_screen_width, last_screen_height, &mut game);
         update_game(&mut game);
         draw_game(&game);
         next_frame().await;
