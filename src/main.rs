@@ -1,12 +1,28 @@
 // #![windows_subsystem = "windows"]
 use macroquad::{ prelude::*, audio::{ self, play_sound_once } };
 use std::{ time::{ SystemTime, UNIX_EPOCH }, rc::Rc };
+use serde::Deserialize;
+use serde_json;
 
 const ENEMY_COLOR: Color = RED;
 const PLAYER_COLOR: Color = GREEN;
 const BUILDING_COLOR: Color = WHITE;
 const NUM_BUILDINGS: u32 = 3;
 const MISSILE_SIZE: f32 = 32.0;
+
+#[derive(Deserialize)]
+struct Entity {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Deserialize)]
+struct LevelData {
+    buildings: Vec<Entity>,
+    cannons: Vec<Entity>,
+    planes: Vec<Entity>,
+    enemy_missiles: Vec<Entity>,
+}
 
 #[derive(PartialEq)]
 struct Missile {
@@ -69,6 +85,7 @@ struct Crosshair {
 struct Game {
     buildings: Vec<Building>,
     planes: Vec<Plane>,
+    enemy_missiles_spawnpoints: Vec<Entity>,
     enemy_missiles: Vec<Missile>,
     player_missiles: Vec<Missile>,
     cannons: Vec<Cannon>,
@@ -207,9 +224,7 @@ fn spawn_crosshair(game: &mut Game, missile_index: Option<usize>) {
     }
 
     let mouse_position = mouse_position();
-    println!("Mouse position: {:?}", mouse_position);
     let world_position = game.camera.screen_to_world(vec2(mouse_position.0, mouse_position.1));
-    println!("World position: {:?}", world_position);
     let crosshair_position = vec2(world_position.x, world_position.y);
     let crosshair = Crosshair {
         x: crosshair_position.x,
@@ -429,8 +444,10 @@ fn draw_buildings(buildings: &Vec<Building>) {
 
 fn draw_planes(planes: &Vec<Plane>, plane_texture: &Texture2D) {
     for plane in planes {
+        let should_flip = plane.direction.x > 0.0;
         draw_texture_ex(plane_texture, plane.x, plane.y, WHITE, DrawTextureParams {
             dest_size: Some(vec2(plane.size, plane.size)),
+            flip_x: should_flip,
             ..Default::default()
         });
     }
@@ -531,8 +548,13 @@ fn cleanup(game: &mut Game) {
 }
 
 fn spawn_enemy_missile(game: &mut Game) {
-    let x = rand::gen_range(5.0, screen_width() - 5.0);
-    let y = 0.0;
+    let spawnpoint_index = rand::gen_range(0, game.enemy_missiles_spawnpoints.len());
+    if spawnpoint_index >= game.enemy_missiles_spawnpoints.len() {
+        return;
+    }
+    let spawnpoint = &game.enemy_missiles_spawnpoints[spawnpoint_index];
+    let x = spawnpoint.x;
+    let y = spawnpoint.y;
     let direction = vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(0.2, 1.0));
     let direction = direction.normalize();
     let missile = Missile::new(x, y, direction, 1.0);
@@ -629,12 +651,69 @@ fn draw_aabb(x: f32, y: f32, size: f32, color: Color) {
     draw_rectangle_lines(x - size / 2.0, y - size / 2.0, size, size, 2.0, color);
 }
 
+fn draw_background(texture: &Texture2D) {
+    // draw texture centered on screen and scale it to screen size (without changing aspect ratio)
+    let screen_width = screen_width();
+    let screen_height = screen_height();
+    let texture_width = texture.width();
+    let texture_height = texture.height();
+    let scale = screen_width / texture_width;
+    let x = screen_width / 2.0 - (texture_width / 2.0) * scale;
+    let y = screen_height / 2.0 - (texture_height / 2.0) * scale;
+    draw_texture_ex(texture, x, y, WHITE, DrawTextureParams {
+        dest_size: Some(vec2(texture_width * scale, texture_height * scale)),
+        ..Default::default()
+    });
+}
+
 fn handle_resize(last_screen_width: f32, last_screen_height: f32, game: &mut Game) {
     let screen_width = screen_width();
     let screen_height = screen_height();
     if screen_width != last_screen_width || screen_height != last_screen_height {
         game.camera.zoom = vec2((1.0 / screen_width) * 2.0, (1.0 / screen_height) * 2.0);
     }
+}
+
+fn load_level_from_file(path: &str) -> LevelData {
+    let level_data = std::fs::read_to_string(path).unwrap();
+    let level_data: LevelData = serde_json::from_str(&level_data).unwrap();
+    level_data
+}
+
+fn load_level(game: &mut Game) {
+    let level_data = load_level_from_file("assets/level.json");
+    for building in level_data.buildings {
+        spawn_building(game, building.x, building.y);
+    }
+
+    for cannon in level_data.cannons {
+        spawn_cannon(game, cannon.x, cannon.y);
+    }
+
+    for plane in level_data.planes {
+        let plane = Plane {
+            x: plane.x,
+            y: plane.y,
+            direction: get_plane_direction(plane.x, plane.y),
+            speed: 1.0,
+            size: 50.0,
+            should_destroy: false,
+        };
+
+        game.planes.push(plane);
+    }
+
+    for enemy_missile_spawnpoint in level_data.enemy_missiles {
+        game.enemy_missiles_spawnpoints.push(enemy_missile_spawnpoint);
+    }
+}
+
+fn get_plane_direction(x: f32, y: f32) -> Vec2 {
+    if x < screen_width() * 0.5 {
+        return vec2(1.0, 0.0);
+    }
+
+    return vec2(-1.0, 0.0);
 }
 
 fn window_conf() -> Conf {
@@ -652,6 +731,7 @@ async fn main() {
     let building_texture = load_texture("assets/building.png").await.unwrap();
     let plane_texture = load_texture("assets/plane.png").await.unwrap();
     let missile_texture = load_texture("assets/missile.png").await.unwrap();
+    let background_texture = load_texture("assets/background.png").await.unwrap();
     building_texture.set_filter(FilterMode::Nearest);
     missile_texture.set_filter(FilterMode::Nearest);
     plane_texture.set_filter(FilterMode::Nearest);
@@ -662,6 +742,7 @@ async fn main() {
     let mut game = Game {
         buildings: vec![],
         planes: vec![],
+        enemy_missiles_spawnpoints: vec![],
         enemy_missiles: vec![],
         player_missiles: vec![],
         cannons: vec![],
@@ -680,16 +761,16 @@ async fn main() {
             ..Default::default()
         },
     };
-    spawn_buildings(&mut game);
-    spawn_cannons(&mut game);
+    load_level(&mut game);
     spawn_enemy_missiles(&mut game);
-    spawn_plane(&mut game);
+
     set_camera(&game.camera);
     loop {
         let last_screen_width = screen_width();
         let last_screen_height = screen_height();
-        clear_background(BLACK);
         handle_resize(last_screen_width, last_screen_height, &mut game);
+        clear_background(BLACK);
+        draw_background(&background_texture);
         update_game(&mut game);
         draw_game(&game);
         next_frame().await;
