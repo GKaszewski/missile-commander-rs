@@ -1,5 +1,5 @@
-// #![windows_subsystem = "windows"]
-use macroquad::{ audio::{ self, play_sound_once }, prelude::*, ui::widgets::Texture };
+#![windows_subsystem = "windows"]
+use macroquad::{ audio::{ self, play_sound_once }, prelude::* };
 use std::{ time::{ SystemTime, UNIX_EPOCH }, rc::Rc };
 use serde::Deserialize;
 use serde_json;
