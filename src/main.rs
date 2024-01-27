@@ -1,19 +1,31 @@
 // #![windows_subsystem = "windows"]
-use macroquad::{ prelude::*, audio::{ self, play_sound_once } };
+use macroquad::{ audio::{ self, play_sound_once }, prelude::*, ui::widgets::Texture };
 use std::{ time::{ SystemTime, UNIX_EPOCH }, rc::Rc };
 use serde::Deserialize;
 use serde_json;
+use rust_embed::RustEmbed;
 
+const CELL_SIZE: f32 = 32.0;
 const ENEMY_COLOR: Color = RED;
 const PLAYER_COLOR: Color = GREEN;
 const BUILDING_COLOR: Color = WHITE;
-const NUM_BUILDINGS: u32 = 3;
-const MISSILE_SIZE: f32 = 32.0;
+const MISSILE_SIZE: f32 = CELL_SIZE;
+const PLANE_WIDTH: f32 = CELL_SIZE;
+const PLANE_HEIGHT: f32 = 16.0;
+const CANNON_BASE_WIDTH: f32 = CELL_SIZE;
+const CANNON_BASE_HEIGHT: f32 = CELL_SIZE;
+const CANNON_BARREL_WIDTH: f32 = CELL_SIZE;
+const CANNON_BARREL_HEIGHT: f32 = CELL_SIZE;
+
+#[derive(RustEmbed)]
+#[folder = "assets/"]
+struct Assets;
 
 #[derive(Deserialize)]
 struct Entity {
     x: f32,
     y: f32,
+    id: u8,
 }
 
 #[derive(Deserialize)]
@@ -22,6 +34,7 @@ struct LevelData {
     cannons: Vec<Entity>,
     planes: Vec<Entity>,
     enemy_missiles: Vec<Entity>,
+    ground: Vec<Entity>,
 }
 
 #[derive(PartialEq)]
@@ -51,7 +64,7 @@ impl Missile {
 struct Building {
     x: f32,
     y: f32,
-    size: f32,
+    size: Vec2,
     texture: Rc<Texture2D>,
     should_destroy: bool,
 }
@@ -62,7 +75,7 @@ struct Plane {
     y: f32,
     direction: Vec2,
     speed: f32,
-    size: f32,
+    size: Vec2,
     should_destroy: bool,
 }
 
@@ -70,7 +83,6 @@ struct Plane {
 struct Cannon {
     x: f32,
     y: f32,
-    size: f32,
     target: Vec2,
     ammo: u32,
 }
@@ -86,12 +98,16 @@ struct Game {
     buildings: Vec<Building>,
     planes: Vec<Plane>,
     enemy_missiles_spawnpoints: Vec<Entity>,
+    ground_entities: Vec<Entity>,
     enemy_missiles: Vec<Missile>,
     player_missiles: Vec<Missile>,
     cannons: Vec<Cannon>,
     plane_texture: Rc<Texture2D>,
-    building_texture: Rc<Texture2D>,
+    building_textures: Vec<Rc<Texture2D>>,
     missile_texture: Rc<Texture2D>,
+    cannon_base_texture: Rc<Texture2D>,
+    cannon_barrel_texture: Rc<Texture2D>,
+    ground_texture: Rc<Texture2D>,
     missile_fire_sound: Rc<audio::Sound>,
     explosion_sound: Rc<audio::Sound>,
     enemy_missile_sound: Rc<audio::Sound>,
@@ -126,12 +142,31 @@ fn draw_x_crosshair(x: f32, y: f32, size: f32, color: Color) {
     draw_line(x + size, y - size, x - size, y + size, 1.0, color);
 }
 
-fn draw_cannon(x: f32, y: f32, size: f32, target: Vec2, color: Color, ammo: u32) {
+fn draw_cannon(
+    x: f32,
+    y: f32,
+    target: Vec2,
+    ammo: u32,
+    base_texture: &Texture2D,
+    barrel_texture: &Texture2D
+) {
     let direction = target - vec2(x, y);
-    let rotation = direction.y.atan2(direction.x).to_degrees();
-    draw_circle_lines(x, y, size, 1.0, color);
-    draw_poly_lines(x, y - size, 3, size, rotation, 1.0, color);
-    // draw ammo count
+    let rotation = (direction.y.atan2(direction.x).to_degrees() + 45.0).to_radians();
+    draw_texture_ex(base_texture, x, y, WHITE, DrawTextureParams {
+        dest_size: Some(vec2(CANNON_BASE_WIDTH, CANNON_BASE_HEIGHT)),
+        ..Default::default()
+    });
+    draw_texture_ex(
+        barrel_texture,
+        x + 8.0,
+        y - CANNON_BARREL_HEIGHT / 2.0,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(CANNON_BARREL_WIDTH, CANNON_BARREL_HEIGHT)),
+            rotation,
+            ..Default::default()
+        }
+    );
     let mut ammo_text = format!("{}", ammo);
     if ammo == 0 {
         ammo_text = "OUT".to_string();
@@ -139,11 +174,24 @@ fn draw_cannon(x: f32, y: f32, size: f32, target: Vec2, color: Color, ammo: u32)
     draw_text(&ammo_text, x - 10.0, y + 10.0, 20.0, WHITE);
 }
 
-fn draw_building(x: f32, y: f32, size: f32, color: Color, building_texture: &Texture2D) {
+fn draw_building(x: f32, y: f32, size: Vec2, color: Color, building_texture: &Texture2D) {
     draw_texture_ex(building_texture, x, y, color, DrawTextureParams {
+        dest_size: Some(size),
+        ..Default::default()
+    });
+}
+
+fn draw_ground(x: f32, y: f32, size: f32, color: Color, ground_texture: &Texture2D) {
+    draw_texture_ex(ground_texture, x, y, color, DrawTextureParams {
         dest_size: Some(vec2(size, size)),
         ..Default::default()
     });
+}
+
+fn draw_ground_entities(ground_entities: &Vec<Entity>, ground_texture: &Texture2D) {
+    for ground_entity in ground_entities {
+        draw_ground(ground_entity.x, ground_entity.y, 50.0, WHITE, ground_texture);
+    }
 }
 
 fn clean_missiles_out_of_window(missiles: &mut Vec<Missile>) {
@@ -290,9 +338,9 @@ fn missile_hit_building(missile: &Missile, building: &Building) -> bool {
         missile.x,
         missile.y,
         Vec2::new(MISSILE_SIZE, MISSILE_SIZE / 2.0),
-        building.x + building.size / 2.0,
-        building.y + building.size / 2.0,
-        Vec2::new(building.size, building.size)
+        building.x + building.size.x / 2.0,
+        building.y + building.size.y / 2.0,
+        building.size
     );
 }
 
@@ -303,7 +351,7 @@ fn missile_hit_plane(missile: &Missile, plane: &Plane) -> bool {
         Vec2::new(MISSILE_SIZE, MISSILE_SIZE / 2.0),
         plane.x,
         plane.y,
-        Vec2::new(plane.size, plane.size)
+        plane.size
     );
 }
 
@@ -394,7 +442,7 @@ fn update_game(game: &mut Game) {
             }
             let missile_index = fire_missile(
                 &mut game.player_missiles,
-                cannon.x,
+                cannon.x + 16.0,
                 cannon.y,
                 cannon,
                 &game.missile_fire_sound
@@ -446,7 +494,7 @@ fn draw_planes(planes: &Vec<Plane>, plane_texture: &Texture2D) {
     for plane in planes {
         let should_flip = plane.direction.x > 0.0;
         draw_texture_ex(plane_texture, plane.x, plane.y, WHITE, DrawTextureParams {
-            dest_size: Some(vec2(plane.size, plane.size)),
+            dest_size: Some(plane.size),
             flip_x: should_flip,
             ..Default::default()
         });
@@ -486,9 +534,20 @@ fn draw_player_missiles(player_missiles: &Vec<Missile>, missile_texture: &Textur
     }
 }
 
-fn draw_cannons(cannons: &Vec<Cannon>) {
+fn draw_cannons(
+    cannons: &Vec<Cannon>,
+    cannon_base_texture: &Texture2D,
+    cannon_barrel_texture: &Texture2D
+) {
     for cannon in cannons {
-        draw_cannon(cannon.x, cannon.y, cannon.size, cannon.target, PLAYER_COLOR, cannon.ammo);
+        draw_cannon(
+            cannon.x,
+            cannon.y,
+            cannon.target,
+            cannon.ammo,
+            cannon_base_texture,
+            cannon_barrel_texture
+        );
     }
 }
 
@@ -508,9 +567,10 @@ fn draw_score(score: i32) {
 }
 
 fn draw_game(game: &Game) {
+    draw_ground_entities(&game.ground_entities, &game.ground_texture);
     draw_buildings(&game.buildings);
     draw_planes(&game.planes, &game.plane_texture);
-    draw_cannons(&game.cannons);
+    draw_cannons(&game.cannons, &game.cannon_base_texture, &game.cannon_barrel_texture);
     draw_crosshairs(&game.crosshairs);
     draw_enemy_missiles(&game.enemy_missiles, &game.missile_texture);
     draw_player_missiles(&game.player_missiles, &game.missile_texture);
@@ -562,34 +622,10 @@ fn spawn_enemy_missile(game: &mut Game) {
     game.enemy_missiles.push(missile);
 }
 
-fn spawn_plane(game: &mut Game) {
-    let right = rand::gen_range(0, 2);
-    let x = if right == 0 { 0.0 } else { screen_width() };
-    let y = rand::gen_range(0.0, screen_height() * 0.5);
-    let direction: Vec2;
-    if right == 0 {
-        direction = vec2(1.0, 0.0);
-    } else {
-        direction = vec2(-1.0, 0.0);
-    }
-
-    let plane = Plane {
-        x,
-        y,
-        direction,
-        speed: 1.0,
-        size: 50.0,
-        should_destroy: false,
-    };
-
-    game.planes.push(plane);
-}
-
 fn spawn_cannon(game: &mut Game, x: f32, y: f32) {
     let cannon = Cannon {
         x,
         y,
-        size: 20.0,
         target: vec2(0.0, 0.0),
         ammo: 10,
     };
@@ -597,47 +633,16 @@ fn spawn_cannon(game: &mut Game, x: f32, y: f32) {
     game.cannons.push(cannon);
 }
 
-fn spawn_building(game: &mut Game, x: f32, y: f32) {
-    let size = 50.0;
+fn spawn_building(game: &mut Game, x: f32, y: f32, id: u8) {
     let building = Building {
         x,
         y,
-        size,
-        texture: game.building_texture.clone(),
+        size: vec2(64.0, 64.0),
+        texture: game.building_textures[id as usize].clone(),
         should_destroy: false,
     };
 
     game.buildings.push(building);
-}
-
-fn spawn_group_buildings(game: &mut Game, gap: f32, x_start: f32, y: f32, num_buildings: u32) {
-    let mut x = x_start;
-    for _ in 0..num_buildings {
-        spawn_building(game, x, y);
-        x += gap;
-    }
-}
-
-fn spawn_buildings(game: &mut Game) {
-    // spawn 3 groups of buildings. Each group has 5 buildings, with a gap of 100px between them.
-    // Between each group there is a gap of 200px.
-
-    let gap = 51.0;
-    let x_start = 100.0;
-    let y = screen_height() - 50.0;
-    let group_gap = 70.0;
-
-    for i in 0..3 {
-        let x = x_start + (i as f32) * (NUM_BUILDINGS as f32) * gap + (i as f32) * group_gap;
-        spawn_group_buildings(game, gap, x, y, NUM_BUILDINGS);
-    }
-}
-
-fn spawn_cannons(game: &mut Game) {
-    let y = screen_height() - 50.0;
-    spawn_cannon(game, 50.0, y);
-    spawn_cannon(game, 300.0, y);
-    spawn_cannon(game, 720.0, y);
 }
 
 fn spawn_enemy_missiles(game: &mut Game) {
@@ -675,15 +680,15 @@ fn handle_resize(last_screen_width: f32, last_screen_height: f32, game: &mut Gam
 }
 
 fn load_level_from_file(path: &str) -> LevelData {
-    let level_data = std::fs::read_to_string(path).unwrap();
-    let level_data: LevelData = serde_json::from_str(&level_data).unwrap();
+    let level_data = Assets::get(path).unwrap().data;
+    let level_data: LevelData = serde_json::from_slice(&level_data).unwrap();
     level_data
 }
 
 fn load_level(game: &mut Game) {
-    let level_data = load_level_from_file("assets/level.json");
+    let level_data = load_level_from_file("level.json");
     for building in level_data.buildings {
-        spawn_building(game, building.x, building.y);
+        spawn_building(game, building.x, building.y, building.id);
     }
 
     for cannon in level_data.cannons {
@@ -694,9 +699,9 @@ fn load_level(game: &mut Game) {
         let plane = Plane {
             x: plane.x,
             y: plane.y,
-            direction: get_plane_direction(plane.x, plane.y),
+            direction: get_plane_direction(plane.x),
             speed: 1.0,
-            size: 50.0,
+            size: vec2(PLANE_WIDTH, PLANE_HEIGHT),
             should_destroy: false,
         };
 
@@ -706,9 +711,13 @@ fn load_level(game: &mut Game) {
     for enemy_missile_spawnpoint in level_data.enemy_missiles {
         game.enemy_missiles_spawnpoints.push(enemy_missile_spawnpoint);
     }
+
+    for ground_entity in level_data.ground {
+        game.ground_entities.push(ground_entity);
+    }
 }
 
-fn get_plane_direction(x: f32, y: f32) -> Vec2 {
+fn get_plane_direction(x: f32) -> Vec2 {
     if x < screen_width() * 0.5 {
         return vec2(1.0, 0.0);
     }
@@ -728,28 +737,79 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     rand::srand(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64);
-    let building_texture = load_texture("assets/building.png").await.unwrap();
-    let plane_texture = load_texture("assets/plane.png").await.unwrap();
-    let missile_texture = load_texture("assets/missile.png").await.unwrap();
-    let background_texture = load_texture("assets/background.png").await.unwrap();
-    building_texture.set_filter(FilterMode::Nearest);
+    let building1_texture = Texture2D::from_file_with_format(
+        &Assets::get("building_1.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
+    let building2_texture = Texture2D::from_file_with_format(
+        &Assets::get("building_2.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
+    let building3_texture = Texture2D::from_file_with_format(
+        &Assets::get("building_3.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
+    let plane_texture = Texture2D::from_file_with_format(
+        &Assets::get("plane.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
+    let missile_texture = Texture2D::from_file_with_format(
+        &Assets::get("missile.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
+    let background_texture = Texture2D::from_file_with_format(
+        &Assets::get("background.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
+    let cannon_base_texture = Texture2D::from_file_with_format(
+        &Assets::get("missile_launcher_part_1.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
+    let cannon_barrel_texture = Texture2D::from_file_with_format(
+        &Assets::get("missile_launcher_part_2.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
+    let ground_texture = Texture2D::from_file_with_format(
+        &Assets::get("ground.png").unwrap().data,
+        Some(ImageFormat::Png)
+    );
     missile_texture.set_filter(FilterMode::Nearest);
     plane_texture.set_filter(FilterMode::Nearest);
-    let missile_fire_sound = audio::load_sound("assets/missile_fire.ogg").await.unwrap();
-    let explosion_sound = audio::load_sound("assets/explosion.ogg").await.unwrap();
-    let enemy_missile_sound = audio::load_sound("assets/enemy_missile.ogg").await.unwrap();
+    cannon_base_texture.set_filter(FilterMode::Nearest);
+    cannon_barrel_texture.set_filter(FilterMode::Nearest);
+    ground_texture.set_filter(FilterMode::Nearest);
+    building1_texture.set_filter(FilterMode::Nearest);
+    building2_texture.set_filter(FilterMode::Nearest);
+    building3_texture.set_filter(FilterMode::Nearest);
+    let building_textures = vec![building1_texture, building2_texture, building3_texture];
+    let missile_fire_sound = audio
+        ::load_sound_from_bytes(&Assets::get("missile_fire.ogg").unwrap().data).await
+        .unwrap();
+    let explosion_sound = audio
+        ::load_sound_from_bytes(&Assets::get("explosion.ogg").unwrap().data).await
+        .unwrap();
+    let enemy_missile_sound = audio
+        ::load_sound_from_bytes(&Assets::get("enemy_missile.ogg").unwrap().data).await
+        .unwrap();
 
     let mut game = Game {
         buildings: vec![],
         planes: vec![],
         enemy_missiles_spawnpoints: vec![],
+        ground_entities: vec![],
         enemy_missiles: vec![],
         player_missiles: vec![],
         cannons: vec![],
         plane_texture: Rc::new(plane_texture),
-        building_texture: Rc::new(building_texture),
+        building_textures: building_textures
+            .iter()
+            .map(|t| Rc::new(t.clone()))
+            .collect(),
         missile_texture: Rc::new(missile_texture),
         missile_fire_sound: Rc::new(missile_fire_sound),
+        cannon_base_texture: Rc::new(cannon_base_texture),
+        cannon_barrel_texture: Rc::new(cannon_barrel_texture),
+        ground_texture: Rc::new(ground_texture),
         explosion_sound: Rc::new(explosion_sound),
         enemy_missile_sound: Rc::new(enemy_missile_sound),
         crosshairs: vec![],
@@ -761,10 +821,12 @@ async fn main() {
             ..Default::default()
         },
     };
+
     load_level(&mut game);
     spawn_enemy_missiles(&mut game);
 
     set_camera(&game.camera);
+
     loop {
         let last_screen_width = screen_width();
         let last_screen_height = screen_height();
