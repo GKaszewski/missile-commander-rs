@@ -1,3 +1,5 @@
+use std::f32::consts::E;
+
 use macroquad::prelude::*;
 use serde::{ Serialize, Deserialize };
 use serde_json;
@@ -6,12 +8,14 @@ const GRID_CELL_SIZE: f32 = 32.0;
 const BUIDLING_SIZE: f32 = GRID_CELL_SIZE * 2.0;
 const CANNON_SIZE: f32 = GRID_CELL_SIZE;
 const PLANE_SIZE: f32 = GRID_CELL_SIZE;
-const PLACEMENT_TYPES_NUM: usize = 4;
+const PLACEMENT_TYPES_NUM: usize = 5;
+const BUILDING_TYPES_NUM: usize = 3;
 
 #[derive(Serialize, Deserialize)]
 struct Entity {
     x: f32,
     y: f32,
+    id: u8,
 }
 
 /*
@@ -24,18 +28,22 @@ struct Level {
     cannons: Vec<Entity>,
     planes: Vec<Entity>,
     enemy_missiles: Vec<Entity>,
+    ground: Vec<Entity>,
 }
 
+#[derive(PartialEq)]
 enum Placement {
     Building,
     Cannon,
     Plane,
     EnemyMissile,
+    Ground,
 }
 
 struct EditorState {
     current_placement: Placement,
     current_placement_index: usize,
+    current_building_index: usize,
 }
 
 fn draw_building(x: f32, y: f32, texture: &Texture2D, color: Color) {
@@ -84,7 +92,12 @@ fn draw_editor_grid() {
     }
 }
 
-fn draw_pointer(cam: &Camera2D, editor_state: &EditorState, building_texture: &Texture2D) {
+fn draw_pointer(
+    cam: &Camera2D,
+    editor_state: &EditorState,
+    building_textures: &Vec<Texture2D>,
+    ground_texture: &Texture2D
+) {
     let mouse_pos = mouse_position();
     let mouse_pos = vec2(mouse_pos.0, mouse_pos.1);
     let mouse_pos = cam.screen_to_world(mouse_pos);
@@ -94,7 +107,8 @@ fn draw_pointer(cam: &Camera2D, editor_state: &EditorState, building_texture: &T
 
     match editor_state.current_placement {
         Placement::Building => {
-            draw_building(x, y, &building_texture, Color::from_rgba(255, 255, 255, 100));
+            let id = editor_state.current_building_index;
+            draw_building(x, y, &building_textures[id], Color::from_rgba(255, 255, 255, 100));
         }
         Placement::Cannon => {
             draw_cannon(x, y);
@@ -104,6 +118,9 @@ fn draw_pointer(cam: &Camera2D, editor_state: &EditorState, building_texture: &T
         }
         Placement::EnemyMissile => {
             draw_enemy_missile(x, y);
+        }
+        Placement::Ground => {
+            draw_ground(x, y, &ground_texture, Color::from_rgba(255, 255, 255, 100));
         }
     }
 }
@@ -123,9 +140,9 @@ fn draw_enemy_missile(x: f32, y: f32) {
     draw_text("M", x + GRID_CELL_SIZE / 2.0, y + GRID_CELL_SIZE / 2.0, 16.0, WHITE);
 }
 
-fn draw_level(level: &Level, building_texture: &Texture2D) {
+fn draw_level(level: &Level, building_textures: &Vec<Texture2D>, ground_texture: &Texture2D) {
     for building in &level.buildings {
-        draw_building(building.x, building.y, building_texture, WHITE);
+        draw_building(building.x, building.y, &building_textures[building.id as usize], WHITE);
     }
 
     for cannon in &level.cannons {
@@ -139,11 +156,22 @@ fn draw_level(level: &Level, building_texture: &Texture2D) {
     for enemy_missile in &level.enemy_missiles {
         draw_enemy_missile(enemy_missile.x, enemy_missile.y);
     }
+
+    for ground in &level.ground {
+        draw_ground(ground.x, ground.y, &ground_texture, WHITE);
+    }
 }
 
 fn draw_background(texture: &Texture2D) {
     draw_texture_ex(texture, 0.0, 0.0, WHITE, DrawTextureParams {
         dest_size: Some(vec2(screen_width(), screen_height())),
+        ..Default::default()
+    });
+}
+
+fn draw_ground(x: f32, y: f32, texture: &Texture2D, color: Color) {
+    draw_texture_ex(texture, x, y, color, DrawTextureParams {
+        dest_size: Some(vec2(GRID_CELL_SIZE, GRID_CELL_SIZE)),
         ..Default::default()
     });
 }
@@ -181,6 +209,9 @@ fn set_placement_by_index(editor_state: &mut EditorState) {
         3 => {
             editor_state.current_placement = Placement::EnemyMissile;
         }
+        4 => {
+            editor_state.current_placement = Placement::Ground;
+        }
         _ => {}
     }
 }
@@ -196,30 +227,35 @@ fn get_entity_xy_from_mouse(cam: &Camera2D) -> (f32, f32) {
     (x, y)
 }
 
-fn place_building(cam: &Camera2D, level: &mut Level) {
+fn place_building(cam: &Camera2D, level: &mut Level, editor_state: &EditorState) {
     let (x, y) = get_entity_xy_from_mouse(cam);
-    level.buildings.push(Entity { x, y });
+    level.buildings.push(Entity { x, y, id: editor_state.current_building_index as u8 });
 }
 
 fn place_cannon(cam: &Camera2D, level: &mut Level) {
     let (x, y) = get_entity_xy_from_mouse(cam);
-    level.cannons.push(Entity { x, y });
+    level.cannons.push(Entity { x, y, id: 1 });
 }
 
 fn place_plane(cam: &Camera2D, level: &mut Level) {
     let (x, y) = get_entity_xy_from_mouse(cam);
-    level.planes.push(Entity { x, y });
+    level.planes.push(Entity { x, y, id: 1 });
 }
 
 fn place_enemy_missile(cam: &Camera2D, level: &mut Level) {
     let (x, y) = get_entity_xy_from_mouse(cam);
-    level.enemy_missiles.push(Entity { x, y });
+    level.enemy_missiles.push(Entity { x, y, id: 1 });
+}
+
+fn place_ground(cam: &Camera2D, level: &mut Level) {
+    let (x, y) = get_entity_xy_from_mouse(cam);
+    level.ground.push(Entity { x, y, id: 1 });
 }
 
 fn place_entity(cam: &Camera2D, level: &mut Level, editor_state: &EditorState) {
     match editor_state.current_placement {
         Placement::Building => {
-            place_building(cam, level);
+            place_building(cam, level, editor_state);
         }
         Placement::Cannon => {
             place_cannon(cam, level);
@@ -230,20 +266,10 @@ fn place_entity(cam: &Camera2D, level: &mut Level, editor_state: &EditorState) {
         Placement::EnemyMissile => {
             place_enemy_missile(cam, level);
         }
+        Placement::Ground => {
+            place_ground(cam, level);
+        }
     }
-}
-
-fn get_entity_from_cell<'a>(
-    cam: &'a Camera2D,
-    entities: &'a Vec<Entity>,
-    x: f32,
-    y: f32
-) -> Option<&'a Entity> {
-    let (x, y) = get_entity_xy_from_mouse(cam);
-    entities
-        .iter()
-        .find(|entity| { entity.x == x && entity.y == y })
-        .map(|entity| entity)
 }
 
 fn remove_entity_from_cell(cam: &Camera2D, entities: &mut Vec<Entity>) {
@@ -264,6 +290,9 @@ fn remove_entity(cam: &Camera2D, level: &mut Level, editor_state: &EditorState) 
         }
         Placement::EnemyMissile => {
             remove_entity_from_cell(cam, &mut level.enemy_missiles);
+        }
+        Placement::Ground => {
+            remove_entity_from_cell(cam, &mut level.ground);
         }
     }
 }
@@ -305,25 +334,44 @@ fn save_level(level: &Level) {
     }
 }
 
+fn handle_change_entity_type(editor_state: &mut EditorState) {
+    match editor_state.current_placement {
+        Placement::Building => {
+            editor_state.current_building_index += 1;
+            editor_state.current_building_index %= BUILDING_TYPES_NUM;
+        }
+        _ => {}
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
-    let building_texture = load_texture("assets/building.png").await.unwrap();
+    let building1_texture = load_texture("assets/building_1.png").await.unwrap();
+    let building2_texture = load_texture("assets/building_2.png").await.unwrap();
+    let building3_texture = load_texture("assets/building_3.png").await.unwrap();
     let missile_texture = load_texture("assets/missile.png").await.unwrap();
     let background_texture = load_texture("assets/background.png").await.unwrap();
-    building_texture.set_filter(FilterMode::Nearest);
+    let ground_texture = load_texture("assets/ground.png").await.unwrap();
+    building1_texture.set_filter(FilterMode::Nearest);
+    building2_texture.set_filter(FilterMode::Nearest);
+    building3_texture.set_filter(FilterMode::Nearest);
+    let building_textures = vec![building1_texture, building2_texture, building3_texture];
     missile_texture.set_filter(FilterMode::Nearest);
     background_texture.set_filter(FilterMode::Nearest);
+    ground_texture.set_filter(FilterMode::Nearest);
 
     let mut level = Level {
         buildings: Vec::new(),
         cannons: Vec::new(),
         planes: Vec::new(),
         enemy_missiles: Vec::new(),
+        ground: Vec::new(),
     };
 
     let mut editor_state = EditorState {
         current_placement: Placement::Building,
         current_placement_index: 0,
+        current_building_index: 0,
     };
 
     let camera = Camera2D {
@@ -342,12 +390,15 @@ async fn main() {
             remove_entity(&camera, &mut level, &editor_state);
         }
         handle_placement_on_mouse_wheel(&mut editor_state);
+        if is_key_pressed(KeyCode::Space) {
+            handle_change_entity_type(&mut editor_state);
+        }
 
         clear_background(LIGHTGRAY);
         draw_background(&background_texture);
         draw_editor_grid();
-        draw_level(&level, &building_texture);
-        draw_pointer(&camera, &editor_state, &building_texture);
+        draw_level(&level, &building_textures, &ground_texture);
+        draw_pointer(&camera, &editor_state, &building_textures, &ground_texture);
         if is_key_pressed(KeyCode::S) {
             save_level(&level);
         }
